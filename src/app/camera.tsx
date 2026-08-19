@@ -13,6 +13,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import {
   ArrowLeft,
   Camera,
+  Volume2,
   Zap
 } from "lucide-react-native";
 
@@ -21,6 +22,14 @@ import {
   detectObjects,
   getMostImportantDetection
 } from "@/services/api";
+
+import {
+  cleanupVoiceService,
+  setVoiceEnabled,
+  speakDetection,
+  stopSpeaking
+} from "@/services/voice";
+
 
 // ============================================================================
 // CONFIGURATION CONSTANTS
@@ -54,7 +63,7 @@ interface DetectionFeedItem {
 // ============================================================================
 
 /**
- * Top control bar with Back, Status Badge, Flash, and Camera Flip
+ * Top control bar with Back, Status Badge, Flash, Camera Flip, and Voice Toggle
  */
 function TopBar({
     onBack,
@@ -62,12 +71,16 @@ function TopBar({
     onFlashToggle,
     isFlashOn,
     onCameraFlip,
+    onVoiceToggle,
+    isVoiceEnabled,
 }: {
     onBack: () => void;
     isDetecting: boolean;
     onFlashToggle: () => void;
     isFlashOn: boolean;
     onCameraFlip: () => void;
+    onVoiceToggle: () => void;
+    isVoiceEnabled: boolean;
 }) {
     return (
         <View style={styles.topBar}>
@@ -125,6 +138,27 @@ function TopBar({
                     accessibilityRole="button"
                 >
                     <Camera size={20} color="#FFFFFF" />
+                </Pressable>
+
+                {/* Voice Toggle Button */}
+                <Pressable
+                    style={[
+                        styles.voiceButton,
+                        isVoiceEnabled ? styles.voiceButtonActive : null
+                    ]}
+                    onPress={onVoiceToggle}
+                    accessibilityLabel={
+                        isVoiceEnabled
+                            ? "Turn voice feedback off"
+                            : "Turn voice feedback on"
+                    }
+                    accessibilityRole="button"
+                    accessibilityState={{ checked: isVoiceEnabled }}
+                >
+                    <Volume2
+                        size={20}
+                        color={isVoiceEnabled ? "#FFFFFF" : "#9CA3AF"}
+                    />
                 </Pressable>
             </View>
         </View>
@@ -331,6 +365,10 @@ export default function CameraScreen() {
     const [isFlashOn, setIsFlashOn] =
         useState(false);
 
+    // Voice feedback state
+    const [isVoiceEnabled, setIsVoiceEnabled] =
+        useState(true);
+
     const isProcessingRef =
         useRef(false);
 
@@ -344,6 +382,7 @@ export default function CameraScreen() {
     useEffect(() => {
         return () => {
             stopDetection();
+            cleanupVoiceService();
         };
     }, []);
 
@@ -352,6 +391,7 @@ export default function CameraScreen() {
         useCallback(() => {
             return () => {
                 stopDetection();
+                cleanupVoiceService();
             };
         }, [])
     );
@@ -416,6 +456,11 @@ export default function CameraScreen() {
                             result.detections
                         );
 
+                        // Speak detection result if voice is enabled
+                        if (mostImportant) {
+                            speakDetection(mostImportant);
+                        }
+
                         setDetectionState(
                             "active"
                         );
@@ -452,6 +497,9 @@ export default function CameraScreen() {
         }
 
         isProcessingRef.current = false;
+        
+        // Stop any ongoing speech when stopping detection
+        stopSpeaking();
     }, [isDetecting]);
 
     // Toggle detection
@@ -497,6 +545,14 @@ export default function CameraScreen() {
         useCallback(() => {
             setIsFlashOn((prev) => !prev);
         }, []);
+
+    // Voice toggle
+    const handleVoiceToggle =
+        useCallback(() => {
+            const newValue = !isVoiceEnabled;
+            setIsVoiceEnabled(newValue);
+            setVoiceEnabled(newValue);
+        }, [isVoiceEnabled]);
 
     // Loading camera permission
     if (!permission) {
@@ -590,6 +646,8 @@ export default function CameraScreen() {
                     onFlashToggle={handleFlashToggle}
                     isFlashOn={isFlashOn}
                     onCameraFlip={handleCameraFlip}
+                    onVoiceToggle={handleVoiceToggle}
+                    isVoiceEnabled={isVoiceEnabled}
                 />
 
                 {/* DETECTION FEED */}
@@ -749,6 +807,20 @@ const styles = StyleSheet.create({
         borderRadius: 6,
         backgroundColor: "#FFD700",
         opacity: 0.8
+    },
+
+    /* VOICE BUTTON */
+    voiceButton: {
+        width: 40,
+        height: 40,
+        borderRadius: 13,
+        backgroundColor: "rgba(0,0,0,0.4)",
+        justifyContent: "center",
+        alignItems: "center"
+    },
+
+    voiceButtonActive: {
+        backgroundColor: "#22C55E",
     },
 
     /* DETECTION FEED */
