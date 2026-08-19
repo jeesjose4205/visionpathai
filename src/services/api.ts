@@ -21,12 +21,68 @@
 // Backend URL configuration
 // TODO: Replace YOUR_COMPUTER_IP with your actual computer's local network IP
 // Example: const BASE_URL = "http://192.168.1.100:8000";
-const BASE_URL = "http://YOUR_COMPUTER_IP:8000";
+const BASE_URL = "http://10.85.181.91:8000";
 
-// TypeScript interfaces for API response types
+// ============================================================================
+// TYPES
+// ============================================================================
+
+/**
+ * Bounding box metadata with calculated properties.
+ */
+export interface BoundingBox {
+  /**
+   * Top-left X coordinate (pixels)
+   */
+  x1: number;
+  
+  /**
+   * Top-left Y coordinate (pixels)
+   */
+  y1: number;
+  
+  /**
+   * Bottom-right X coordinate (pixels)
+   */
+  x2: number;
+  
+  /**
+   * Bottom-right Y coordinate (pixels)
+   */
+  y2: number;
+  
+  /**
+   * Center X coordinate (pixels)
+   */
+  center_x: number;
+  
+  /**
+   * Center Y coordinate (pixels)
+   */
+  center_y: number;
+  
+  /**
+   * Width in pixels
+   */
+  width: number;
+  
+  /**
+   * Height in pixels
+   */
+  height: number;
+  
+  /**
+   * Area in pixels
+   */
+  area: number;
+}
+
+/**
+ * Single detection result from the backend.
+ */
 export interface DetectionResult {
   /**
-   * Object class label from YOLO model (e.g., "person", "car", "chair")
+   * Object class label (e.g., "person", "car", "chair")
    */
   label: string;
   
@@ -36,38 +92,45 @@ export interface DetectionResult {
   confidence: number;
   
   /**
-   * Bounding box top-left X coordinate (pixels)
+   * Bounding box with full metadata
    */
-  x1: number;
+  bbox: BoundingBox;
   
   /**
-   * Bounding box top-left Y coordinate (pixels)
+   * Horizontal position relative to image: "left", "center", or "right"
    */
-  y1: number;
+  position: "left" | "center" | "right";
   
   /**
-   * Bounding box bottom-right X coordinate (pixels)
+   * Approximate proximity based on apparent size: "close", "medium", or "far"
    */
-  x2: number;
+  proximity: "close" | "medium" | "far";
   
   /**
-   * Bounding box bottom-right Y coordinate (pixels)
+   * Priority score from 1 (lowest) to 5 (highest)
    */
-  y2: number;
+  priority: number;
 }
 
+/**
+ * Response structure for object detection.
+ */
 export interface DetectionResponse {
   /**
-   * List of detected objects with their bounding boxes and confidence scores
+   * List of detected objects with metadata
    */
   detections: DetectionResult[];
 }
+
+// ============================================================================
+// FUNCTIONS
+// ============================================================================
 
 /**
  * Send an image to the FastAPI backend for object detection.
  * 
  * @param imageUri - Local file URI of the image to analyze
- * @returns Promise<DetectionResponse> - Array of detected objects with bounding boxes
+ * @returns Promise<DetectionResponse> - Array of detected objects with metadata
  * @throws Error if the API request fails or returns an error status
  */
 export async function detectObjects(imageUri: string): Promise<DetectionResponse> {
@@ -95,7 +158,6 @@ export async function detectObjects(imageUri: string): Promise<DetectionResponse
       method: "POST",
       headers: {
         // Let fetch set the Content-Type with proper boundary
-        // "Content-Type": `multipart/form-data; boundary=${formData.getBoundary()}`,
       },
       body: formData,
     });
@@ -138,4 +200,37 @@ export async function detectObjects(imageUri: string): Promise<DetectionResponse
     // Rethrow with clearer context
     throw new Error(`Object detection failed: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+/**
+ * Get the most important detection from a list.
+ * Sorts by priority descending and returns the highest priority object.
+ * 
+ * @param detections - Array of detection results
+ * @returns The highest priority detection, or undefined if no detections
+ */
+export function getMostImportantDetection(detections: DetectionResult[]): DetectionResult | undefined {
+  if (!detections || detections.length === 0) {
+    return undefined;
+  }
+  
+  // Sort by priority descending
+  const sorted = [...detections].sort((a, b) => b.priority - a.priority);
+  
+  return sorted[0];
+}
+
+/**
+ * Format detection result for voice guidance.
+ * 
+ * @param detection - Detection result to format
+ * @returns Formatted string for voice output
+ */
+export function formatDetectionForVoice(detection: DetectionResult): string {
+  const { label, position, proximity } = detection;
+  
+  // Capitalize first letter
+  const formattedLabel = label.charAt(0).toUpperCase() + label.slice(1);
+  
+  return `${formattedLabel} • ${position.toUpperCase()} • ${proximity.toUpperCase()}`;
 }
