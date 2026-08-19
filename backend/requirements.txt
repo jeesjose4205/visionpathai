@@ -1,0 +1,17 @@
+# FastAPI backend dependencies for VisionPath AI
+# Compatible with Python 3.10+
+
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+
+# Object detection
+ultralytics>=8.2.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+
+# File handling
+python-multipart>=0.0.9
+
+# CORS middleware
+# Included by default in FastAPI
