@@ -21,7 +21,7 @@
 // Backend URL configuration
 // TODO: Replace YOUR_COMPUTER_IP with your actual computer's local network IP
 // Example: const BASE_URL = "http://192.168.1.100:8000";
-const BASE_URL = "http://10.85.181.91:8000";
+const BASE_URL = "http://10.58.116.91:8000";
 
 // ============================================================================
 // TYPES

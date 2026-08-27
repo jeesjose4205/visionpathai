@@ -4,76 +4,44 @@ VisionPath AI Backend - FastAPI Application
 Object detection endpoint using Ultralytics YOLO model.
 """
 
+import logging
 import os
+import time
 import traceback
-from typing import List
+from typing import List, Optional
 
 import cv2
 import numpy as np
 import uvicorn
+from config import (
+    ALLOWED_ORIGINS_LIST,
+    DEFAULT_PRIORITY,
+    LEFT_THRESHOLD,
+    PRIORITY_BASE_SCORES,
+    PROXIMITY_CLOSE_THRESHOLD,
+    PROXIMITY_MEDIUM_THRESHOLD,
+    RIGHT_THRESHOLD,
+    SUPPORTED_MIME_TYPES,
+    SUPPORTED_EXTENSIONS,
+    VISIONPATH_CONFIDENCE_THRESHOLD,
+    VISIONPATH_MAX_FILE_SIZE,
+    VISIONPATH_REQUEST_TIMEOUT,
+)
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from ultralytics import YOLO
 
+# Configure logging
+logger = logging.getLogger("visionpath")
 
 # ============================================================================
 # CONFIGURATION CONSTANTS
 # ============================================================================
 
-# YOLO model confidence threshold
-# Objects with confidence below this value are filtered out
-YOLO_CONFIDENCE_THRESHOLD = 0.25
-
 # Image dimensions for position estimation (default)
 DEFAULT_IMAGE_WIDTH = 640
 DEFAULT_IMAGE_HEIGHT = 640
-
-# Position estimation thresholds (proportions of image width)
-# left: center_x < left_boundary
-# center: left_boundary <= center_x < right_boundary
-# right: center_x >= right_boundary
-LEFT_THRESHOLD = 0.33  # Left third
-RIGHT_THRESHOLD = 0.67  # Right third
-
-# Proximity estimation thresholds (proportions of image area)
-# close: relative_area >= close_threshold
-# medium: medium_threshold <= relative_area < close_threshold
-# far: relative_area < medium_threshold
-PROXIMITY_CLOSE_THRESHOLD = 0.25  # Large portion of image
-PROXIMITY_MEDIUM_THRESHOLD = 0.0625  # Medium portion (1/16th)
-
-# Priority base scores for object categories
-# Higher priority for objects that are more important for navigation
-PRIORITY_BASE_SCORES = {
-    "person": 5,  # Highest priority for safety
-    "car": 4,     # Vehicles are important
-    "bus": 4,
-    "truck": 4,
-    "bicycle": 4,
-    "motorcycle": 4,
-    "train": 3,
-    "airplane": 3,
-    "boat": 3,
-    "traffic light": 3,
-    "fire hydrant": 3,
-    "stop sign": 3,
-    "bench": 2,
-    "bird": 2,
-    "cat": 2,
-    "dog": 2,
-    "horse": 2,
-    "sheep": 2,
-    "cow": 2,
-    "elephant": 2,
-    "bear": 2,
-    "zebra": 2,
-    "giraffe": 2,
-}
-
-# Default priority for unrecognized objects
-DEFAULT_PRIORITY = 1
-
 
 # ============================================================================
 # PYDANTIC MODELS
@@ -97,9 +65,9 @@ class DetectionResult(BaseModel):
     label: str
     confidence: float
     bbox: BoundingBox
-    position: str  # "left", "center", or "right"
-    proximity: str  # "close", "medium", or "far"
-    priority: int  # 1 (lowest) to 5 (highest)
+    position: str = Field(..., pattern="^(left|center|right)$")
+    proximity: str = Field(..., pattern="^(close|medium|far)$")
+    priority: int = Field(..., ge=1, le=5)
 
 
 class DetectionResponse(BaseModel):
@@ -117,10 +85,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS middleware for development
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS_LIST,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -140,9 +108,11 @@ def get_model() -> YOLO:
     """Get or initialize the YOLO model."""
     global MODEL
     if MODEL is None:
+        logger.info("Loading YOLOv8-nano model...")
         # Load YOLOv8-nano model
         # Ultralytics will download automatically if not found
         MODEL = YOLO("yolov8n.pt")
+        logger.info("YOLOv8-nano model loaded successfully")
     return MODEL
 
 
@@ -243,6 +213,34 @@ def get_priority_emoji(priority: int) -> str:
     return emojis.get(priority, "⚪")
 
 
+def validate_image_content(image: np.ndarray) -> bool:
+    """
+    Validate that the decoded image has valid dimensions.
+    
+    Args:
+        image: Decoded numpy array image
+        
+    Returns:
+        True if image has valid dimensions, False otherwise
+    """
+    if image is None:
+        return False
+    
+    # Check image has valid dimensions
+    if len(image.shape) != 3:
+        return False
+    
+    height, width, channels = image.shape
+    
+    if height <= 0 or width <= 0:
+        return False
+    
+    if channels not in [1, 3, 4]:
+        return False
+    
+    return True
+
+
 # ============================================================================
 # API ENDPOINTS
 # ============================================================================
@@ -283,29 +281,51 @@ async def detect_objects(file: UploadFile = File(...)):
     Raises:
         HTTPException: For invalid file uploads or processing errors
     """
+    # Record request start time
+    request_start_time = time.time()
+    
+    # Log request received
+    logger.info(f"Detection request received: {file.filename}")
+    
     # Validate that a file was uploaded
     if file.filename is None or file.filename == "":
+        logger.warning("Detection request failed: No file uploaded")
         raise HTTPException(
             status_code=400,
             detail="No file uploaded. Please provide a file with the 'file' field."
         )
     
-    # Read the uploaded file content
-    try:
-        contents = await file.read()
-        if len(contents) == 0:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read uploaded file: {str(e)}")
-    
-    # Validate file extension (basic check)
-    allowed_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
+    # Validate file extension
     file_extension = os.path.splitext(file.filename)[1].lower()
-    if file_extension not in allowed_extensions:
+    if file_extension not in SUPPORTED_EXTENSIONS:
+        logger.warning(
+            f"Detection request failed: Invalid file type {file_extension}"
+        )
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid file type. Allowed types: {', '.join(allowed_extensions)}"
+            detail=f"Invalid file type. Supported types: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
         )
+    
+    # Read and validate file size
+    try:
+        contents = await file.read()
+        file_size = len(contents)
+        
+        if file_size == 0:
+            logger.warning("Detection request failed: Empty file uploaded")
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+        
+        if file_size > VISIONPATH_MAX_FILE_SIZE:
+            logger.warning(
+                f"Detection request failed: File size {file_size} exceeds limit {VISIONPATH_MAX_FILE_SIZE}"
+            )
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size is {VISIONPATH_MAX_FILE_SIZE // (1024 * 1024)}MB."
+            )
+    except Exception as e:
+        logger.error(f"Detection request failed: Error reading file - {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to read uploaded file: {str(e)}")
     
     # Decode image using OpenCV
     try:
@@ -313,13 +333,24 @@ async def detect_objects(file: UploadFile = File(...)):
         image = cv2.imdecode(file_buffer, cv2.IMREAD_COLOR)
         
         if image is None:
+            logger.warning("Detection request failed: Failed to decode image")
             raise HTTPException(status_code=400, detail="Failed to decode image. File may be corrupted.")
+        
+        # Validate image dimensions
+        if not validate_image_content(image):
+            logger.warning("Detection request failed: Invalid image dimensions")
+            raise HTTPException(status_code=400, detail="Invalid image. Could not decode valid image data.")
+            
     except Exception as e:
+        logger.error(f"Detection request failed: Image decoding error - {str(e)}")
         raise HTTPException(status_code=400, detail=f"Image decoding failed: {str(e)}")
     
-    # Get image dimensions for position/proximity calculations
+    # Log image dimensions
     image_height, image_width = image.shape[:2]
     image_area = image_width * image_height
+    
+    # Record decoding completion time
+    decode_time = time.time()
     
     # Run object detection
     try:
@@ -328,7 +359,7 @@ async def detect_objects(file: UploadFile = File(...)):
         # Perform inference
         results = model.predict(
             source=image,
-            conf=YOLO_CONFIDENCE_THRESHOLD,
+            conf=VISIONPATH_CONFIDENCE_THRESHOLD,
             verbose=False
         )
         
@@ -381,12 +412,21 @@ async def detect_objects(file: UploadFile = File(...)):
                         priority=priority
                     ))
         
+        # Calculate total processing time
+        total_time = time.time() - request_start_time
+        
+        logger.info(
+            f"Detection completed: {len(detections)} object(s) "
+            f"processed in {total_time:.2f}s"
+        )
+        
         return DetectionResponse(detections=detections)
         
     except Exception as e:
         error_detail = f"Model inference failed: {str(e)}"
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=error_detail)
+        logger.error(f"Detection request failed: {error_detail}")
+        logger.debug(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Unable to process image.")
 
 
 # ============================================================================

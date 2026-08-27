@@ -13,5 +13,8 @@ opencv-python>=4.8.0
 # File handling
 python-multipart>=0.0.9
 
+# Environment variables
+python-dotenv>=1.0.0
+
 # CORS middleware
 # Included by default in FastAPI
