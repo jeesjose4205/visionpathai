@@ -2,32 +2,32 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Pressable,
-  StatusBar,
-  StyleSheet,
-  Text,
-  View
+    Pressable,
+    StatusBar,
+    StyleSheet,
+    Text,
+    View
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
-  ArrowLeft,
-  Camera,
-  Volume2,
-  Zap
+    ArrowLeft,
+    Camera,
+    Volume2,
+    Zap
 } from "lucide-react-native";
 
 import {
-  DetectionResult,
-  detectObjects,
-  getMostImportantDetection
+    DetectionResult,
+    detectObjects,
+    getMostImportantDetection
 } from "@/services/api";
 
 import {
-  cleanupVoiceService,
-  setVoiceEnabled,
-  speakDetection,
-  stopSpeaking
+    cleanupVoiceService,
+    setVoiceEnabled,
+    speakDetection,
+    stopSpeaking
 } from "@/services/voice";
 
 
@@ -428,7 +428,8 @@ export default function CameraScreen() {
                         await cameraRef.current?.takePictureAsync({
                             quality: 0.8,
                             base64: false,
-                            skipProcessing: true
+                            skipProcessing: true,
+                            shutterSound: false
                         });
 
                     if (photo && photo.uri) {
@@ -637,6 +638,7 @@ export default function CameraScreen() {
                     ref={cameraRef}
                     style={styles.cameraPreview}
                     facing={facing}
+                    animateShutter={false}
                 />
 
                 {/* TOP BAR */}
