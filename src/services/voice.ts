@@ -27,12 +27,18 @@ import { DetectionResult } from "@/services/api";
 export const VOICE_COOLDOWN_MS = 4000;
 
 /**
+ * Confidence threshold for voice announcements.
+ * Only detections with confidence >= this value will trigger speech.
+ */
+export const VOICE_CONFIDENCE_THRESHOLD = 0.50;
+
+/**
  * Priority thresholds for voice announcement behavior.
  */
-export const PRIORITY_CRITICAL = 5; // Immediate warning
-export const PRIORITY_HIGH = 4;     // Quick announcement
-export const PRIORITY_MEDIUM = 3;   // Normal announcement
-export const PRIORITY_LOW = 2;      // Limited announcement
+export const PRIORITY_CRITICAL = 5; // Immediate warning - may interrupt any speech
+export const PRIORITY_HIGH = 4;     // High priority - may interrupt low priority
+export const PRIORITY_MEDIUM = 3;   // Medium priority - may interrupt low priority
+export const PRIORITY_LOW = 2;      // Low priority - should not interrupt important speech
 export const PRIORITY_MIN = 1;      // Minimum priority
 
 // ============================================================================
@@ -270,6 +276,7 @@ export function getDetectionKey(detection: DetectionResult): string {
 interface VoiceState {
     lastAnnouncedKey: string | null;
     lastAnnouncementTime: number | null;
+    lastAnnouncedPriority: number | null;
     isSpeaking: boolean;
     pendingDetection: DetectionResult | null;
     isVoiceEnabled: boolean;
@@ -278,6 +285,7 @@ interface VoiceState {
 const voiceState: VoiceState = {
     lastAnnouncedKey: null,
     lastAnnouncementTime: null,
+    lastAnnouncedPriority: null,
     isSpeaking: false,
     pendingDetection: null,
     isVoiceEnabled: true, // Default: ON
@@ -287,11 +295,13 @@ const voiceState: VoiceState = {
  * Check if a detection should be announced based on cooldown and duplicates.
  * 
  * Rules:
- * 1. Same detection within cooldown: skip
- * 2. Position change: allow announcement
- * 3. Proximity change: allow announcement (especially important)
- * 4. Priority increase: allow immediate announcement
- * 5. Priority 5 alerts override lower-priority cooldowns
+ * 1. Confidence check - skip if below threshold
+ * 2. Same detection within cooldown: skip
+ * 3. Position change (left <-> center <-> right): announce
+ * 4. Proximity change (far<->medium<->close): announce
+ * 5. Priority change: announce if new priority is higher
+ * 6. Priority 5 alerts override lower-priority cooldowns
+ * 7. Priority 4/3 may interrupt priority 1-2 speech
  * 
  * @param detection - Current detection result
  * @param force - Force announcement (bypass cooldown)
@@ -301,6 +311,12 @@ export function shouldAnnounceDetection(
     detection: DetectionResult,
     force: boolean = false
 ): boolean {
+    // Confidence filter - skip low-confidence detections
+    if (detection.confidence < VOICE_CONFIDENCE_THRESHOLD) {
+        console.log(`[VOICE] Skipped: confidence ${detection.confidence} < threshold ${VOICE_CONFIDENCE_THRESHOLD}`);
+        return false;
+    }
+    
     const key = getDetectionKey(detection);
     const now = Date.now();
     
@@ -326,23 +342,57 @@ export function shouldAnnounceDetection(
         return true;
     }
     
-    // Different detection - check if it's a significant change
+    // Different detection - analyze changes
     const lastKeyParts = voiceState.lastAnnouncedKey.split("-");
     const currentKeyParts = key.split("-");
     
-    // Position changed - announce
-    if (lastKeyParts[1] !== currentKeyParts[1]) {
+    const lastPosition = lastKeyParts[1] as DetectionResult["position"];
+    const currentPosition = currentKeyParts[1] as DetectionResult["position"];
+    
+    const lastProximity = lastKeyParts[2] as DetectionResult["proximity"];
+    const currentProximity = currentKeyParts[2] as DetectionResult["proximity"];
+    
+    // Check if this is a priority-based interruption
+    const lastPriority = voiceState.lastAnnouncedPriority ?? PRIORITY_MIN;
+    const isNewHighPriority = detection.priority >= PRIORITY_HIGH;
+    const isLastLowPriority = lastPriority <= PRIORITY_LOW;
+    
+    // High priority (4+) can interrupt low priority (1-2)
+    if (isNewHighPriority && isLastLowPriority) {
+        console.log("[VOICE] High priority interruption");
         return true;
     }
     
-    // Proximity changed - announce (especially important)
-    if (lastKeyParts[2] !== currentKeyParts[2]) {
+    // Critical priority (5) can interrupt any speech
+    if (detection.priority === PRIORITY_CRITICAL && voiceState.isSpeaking) {
+        console.log("[VOICE] Critical priority interruption");
+        return true;
+    }
+    
+    // Check for meaningful proximity changes
+    // far -> medium, medium -> close, far -> close are meaningful
+    if (lastProximity !== currentProximity) {
+        const proximityOrder = { far: 0, medium: 1, close: 2 };
+        const lastOrder = proximityOrder[lastProximity];
+        const currentOrder = proximityOrder[currentProximity];
+        
+        // Only announce if proximity changed meaningfully (not same, not just small fluctuation)
+        if (lastOrder !== currentOrder) {
+            console.log(`[VOICE] Proximity changed: ${lastProximity} -> ${currentProximity}`);
+            return true;
+        }
+    }
+    
+    // Check for position changes (left <-> center <-> right)
+    if (lastPosition !== currentPosition) {
+        console.log(`[VOICE] Position changed: ${lastPosition} -> ${currentPosition}`);
         return true;
     }
     
     // If we get here, it's a different object but same position/proximity
-    // Check if new one has higher priority
-    if (detection.priority > PRIORITY_LOW) {
+    // Only announce if new object has higher priority than previous
+    if (detection.priority > lastPriority) {
+        console.log(`[VOICE] Priority change: ${lastPriority} -> ${detection.priority}`);
         return true;
     }
     
@@ -381,9 +431,11 @@ export function isSpeaking(): boolean {
  * This function:
  * 1. Checks if voice is enabled
  * 2. Checks cooldown and duplicate prevention
- * 3. Generates appropriate message based on priority and category
- * 4. Plays the speech using expo-speech
- * 5. Updates voice state
+ * 3. Checks confidence threshold
+ * 4. Checks priority-based interruption
+ * 5. Generates appropriate message based on priority and category
+ * 6. Plays the speech using expo-speech
+ * 7. Updates voice state
  * 
  * @param detection - Detection result to speak
  * @param force - Force announcement regardless of cooldown
@@ -397,11 +449,6 @@ export function speakDetection(
         return;
     }
     
-    // Stop any pending speech
-    if (voiceState.pendingDetection !== null) {
-        voiceState.pendingDetection = null;
-    }
-    
     // Check if we should speak
     if (!shouldAnnounceDetection(detection, force)) {
         console.log(`[VOICE] Skipped: ${getDetectionKey(detection)} (in cooldown)`);
@@ -412,6 +459,12 @@ export function speakDetection(
     const message = formatDetectionForVoice(detection);
     
     console.log(`[VOICE] Speaking: ${message}`);
+    
+    // Priority-based interruption: stop current speech for high-priority alerts
+    if (detection.priority >= PRIORITY_HIGH && voiceState.isSpeaking) {
+        console.log("[VOICE] Interrupting current speech");
+        Speech.stop();
+    }
     
     // Play speech
     Speech.speak(message, {
@@ -435,6 +488,7 @@ export function speakDetection(
     // Update state
     voiceState.lastAnnouncedKey = getDetectionKey(detection);
     voiceState.lastAnnouncementTime = Date.now();
+    voiceState.lastAnnouncedPriority = detection.priority;
 }
 
 // ============================================================================
@@ -449,6 +503,7 @@ export function cleanupVoiceService(): void {
     stopSpeaking();
     voiceState.lastAnnouncedKey = null;
     voiceState.lastAnnouncementTime = null;
+    voiceState.lastAnnouncedPriority = null;
     voiceState.pendingDetection = null;
 }
 
