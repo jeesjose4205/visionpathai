@@ -19,8 +19,10 @@ import {
 
 import {
     DetectionResult,
+    checkBackendHealth,
     detectObjects,
-    getMostImportantDetection
+    getMostImportantDetection,
+    subscribeToConnectionState
 } from "@/services/api";
 
 import {
@@ -73,6 +75,7 @@ function TopBar({
     onCameraFlip,
     onVoiceToggle,
     isVoiceEnabled,
+    connectionState,
 }: {
     onBack: () => void;
     isDetecting: boolean;
@@ -81,6 +84,7 @@ function TopBar({
     onCameraFlip: () => void;
     onVoiceToggle: () => void;
     isVoiceEnabled: boolean;
+    connectionState: "connected" | "checking" | "disconnected";
 }) {
     return (
         <View style={styles.topBar}>
@@ -105,6 +109,16 @@ function TopBar({
                     {isDetecting ? "LIVE DETECTION" : "LIVE"}
                 </Text>
             </View>
+
+            {/* Connection Status Badge */}
+            {connectionState === 'disconnected' && (
+                <View style={styles.connectionBadge}>
+                    <View style={styles.connectionBadgeDot} />
+                    <Text style={styles.connectionBadgeText}>
+                        Backend Unavailable
+                    </Text>
+                </View>
+            )}
 
             <View style={styles.topRightControls}>
                 {/* Flashlight Button */}
@@ -369,6 +383,12 @@ export default function CameraScreen() {
     const [isVoiceEnabled, setIsVoiceEnabled] =
         useState(true);
 
+    // Connection state ref for checking backend availability
+    const connectionStateRef = useRef<"connected" | "checking" | "disconnected">("checking");
+    
+    // Connection state state for display purposes
+    const [connectionState, setConnectionState] = useState<"connected" | "checking" | "disconnected">("checking");
+
     const isProcessingRef =
         useRef(false);
 
@@ -378,11 +398,23 @@ export default function CameraScreen() {
     const detectionStartTimeRef =
         useRef<number | null>(null);
 
+    // Background health check ref to prevent infinite loops
+    const healthCheckRef = useRef<NodeJS.Timeout | null>(null);
+    
+    // Track last connection state for meaningful announcements
+    const lastConnectionStateRef = useRef<"connected" | "disconnected" | null>(null);
+
     // Cleanup on unmount
     useEffect(() => {
         return () => {
             stopDetection();
             cleanupVoiceService();
+            
+            // Clear health check interval
+            if (healthCheckRef.current) {
+                clearInterval(healthCheckRef.current);
+                healthCheckRef.current = null;
+            }
         };
     }, []);
 
@@ -392,13 +424,86 @@ export default function CameraScreen() {
             return () => {
                 stopDetection();
                 cleanupVoiceService();
+                
+                // Clear health check interval
+                if (healthCheckRef.current) {
+                    clearInterval(healthCheckRef.current);
+                    healthCheckRef.current = null;
+                }
             };
         }, [])
     );
 
+    // Subscribe to connection state changes
+    useEffect(() => {
+        const unsubscribe = subscribeToConnectionState((state) => {
+            // Update both ref and state
+            connectionStateRef.current = state;
+            setConnectionState(state);
+            
+            // Announce meaningful state transitions
+            if (isVoiceEnabled) {
+                const currentIsConnected = lastConnectionStateRef.current === 'connected';
+                const newIsConnected = state === 'connected';
+                
+                // Only announce when state changes from connected to disconnected or vice versa
+                if (currentIsConnected !== newIsConnected) {
+                    if (state === 'connected') {
+                        speakDetection(
+                            { 
+                                label: "backend connected", 
+                                confidence: 1, 
+                                bbox: { x1: 0, y1: 0, x2: 0, y2: 0, center_x: 0, center_y: 0, width: 0, height: 0, area: 0 },
+                                position: "center" as const,
+                                proximity: "medium" as const,
+                                priority: 1
+                            },
+                            true // force announcement
+                        );
+                    } else if (state === 'disconnected') {
+                        speakDetection(
+                            { 
+                                label: "backend unavailable", 
+                                confidence: 1, 
+                                bbox: { x1: 0, y1: 0, x2: 0, y2: 0, center_x: 0, center_y: 0, width: 0, height: 0, area: 0 },
+                                position: "center" as const,
+                                proximity: "medium" as const,
+                                priority: 1
+                            },
+                            true // force announcement
+                        );
+                    }
+                    lastConnectionStateRef.current = state === 'connected' ? 'connected' : 'disconnected';
+                }
+            }
+        });
+
+        // Initial health check
+        checkBackendHealth().then(state => {
+            connectionStateRef.current = state;
+        });
+
+        // Set up background health check every 30 seconds
+        healthCheckRef.current = setInterval(() => {
+            checkBackendHealth().then(state => {
+                connectionStateRef.current = state;
+            });
+        }, 30000);
+
+        return unsubscribe;
+    }, [isVoiceEnabled]);
+
     // Start detection loop
     const startDetection = useCallback(async () => {
         if (isDetecting) return;
+
+        // Check backend health before starting
+        const isConnected = await checkBackendHealth();
+        
+        if (connectionStateRef.current === 'disconnected') {
+            console.log("[CAMERA] Backend unavailable. Cannot start detection.");
+            return;
+        }
 
         setIsDetecting(true);
         setDetectionState("active");
@@ -414,6 +519,13 @@ export default function CameraScreen() {
 
         detectionIntervalRef.current =
             setInterval(async () => {
+                // Check if we're still connected before each detection
+                if (connectionStateRef.current === 'disconnected') {
+                    console.log("[CAMERA] Backend disconnected. Stopping detection.");
+                    stopDetection();
+                    return;
+                }
+
                 if (isProcessingRef.current) {
                     return;
                 }
@@ -478,7 +590,7 @@ export default function CameraScreen() {
                         false;
                 }
             }, DETECTION_INTERVAL_MS);
-    }, [isDetecting, permission]);
+    }, [isDetecting, permission, connectionState]);
 
     // Stop detection loop
     const stopDetection = useCallback(() => {
@@ -650,6 +762,7 @@ export default function CameraScreen() {
                     onCameraFlip={handleCameraFlip}
                     onVoiceToggle={handleVoiceToggle}
                     isVoiceEnabled={isVoiceEnabled}
+                    connectionState={connectionState}
                 />
 
                 {/* DETECTION FEED */}
@@ -774,6 +887,32 @@ const styles = StyleSheet.create({
     statusBadgeText: {
         color: "#FFFFFF",
         fontSize: 11,
+        fontWeight: "600",
+        textTransform: "uppercase"
+    },
+
+    /* CONNECTION BADGE */
+    connectionBadge: {
+        flexDirection: "row",
+        alignItems: "center",
+        backgroundColor: "rgba(236,72,72,0.8)",
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 16,
+        marginLeft: 8
+    },
+
+    connectionBadgeDot: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        backgroundColor: "#FFFFFF",
+        marginRight: 6
+    },
+
+    connectionBadgeText: {
+        color: "#FFFFFF",
+        fontSize: 9,
         fontWeight: "600",
         textTransform: "uppercase"
     },

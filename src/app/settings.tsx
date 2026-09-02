@@ -1,29 +1,31 @@
 import { router } from "expo-router";
 import React, { useState } from "react";
 import {
-    Pressable,
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Switch,
-    Text,
-    View,
+  Alert,
+  Pressable,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Switch,
+  Text,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
-    ArrowLeft,
-    Bell,
-    Camera,
-    ChevronRight,
-    Eye,
-    Info,
-    Mic,
-    Moon,
-    Settings as SettingsIcon,
-    ShieldCheck,
-    Vibrate,
-    Volume2,
+  ArrowLeft,
+  Bell,
+  Camera,
+  ChevronRight,
+  Eye,
+  Globe,
+  Info,
+  Mic,
+  Moon,
+  Settings as SettingsIcon,
+  ShieldCheck,
+  Vibrate,
+  Volume2,
 } from "lucide-react-native";
 
 type SettingsRowProps = {
@@ -64,6 +66,8 @@ export default function SettingsScreen() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [vibrationEnabled, setVibrationEnabled] = useState(true);
   const [darkMode, setDarkMode] = useState(false);
+  const [backendUrl, setBackendUrl] = useState("http://10.58.116.91:8000");
+  const [testingConnection, setTestingConnection] = useState(false);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -149,6 +153,61 @@ export default function SettingsScreen() {
               icon={<Eye size={21} color="#1761B0" />}
               title="Visual Accessibility"
               description="Text size, contrast and display options"
+              background="#E7EFF9"
+            />
+          </View>
+
+          {/* BACKEND CONFIGURATION */}
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Backend Configuration</Text>
+
+            <Text style={styles.sectionSubtitle}>
+              Configure API backend connection
+            </Text>
+          </View>
+
+          <View style={styles.settingsCard}>
+            <SettingsRow
+              icon={<Globe size={21} color="#1761B0" />}
+              title="Backend Server URL"
+              description="Change the backend server URL"
+              background="#E7EFF9"
+              rightElement={
+                <Pressable
+                  onPress={async () => {
+                    if (!isValidUrl(backendUrl)) {
+                      Alert.alert("Invalid URL", "Please enter a valid URL format (e.g., http://192.168.1.100:8000)");
+                      return;
+                    }
+                    
+                    setTestingConnection(true);
+                    const result = await testBackendConnection(backendUrl);
+                    setTestingConnection(false);
+                    
+                    if (result.success) {
+                      Alert.alert("Connection Successful", result.message);
+                    } else {
+                      Alert.alert("Connection Failed", result.message);
+                    }
+                  }}
+                  disabled={testingConnection}
+                >
+                  <Text style={[
+                    styles.testButton,
+                    testingConnection && styles.testButtonDisabled
+                  ]}>
+                    {testingConnection ? "Testing..." : "Test Connection"}
+                  </Text>
+                </Pressable>
+              }
+            />
+
+            <View style={styles.divider} />
+
+            <SettingsRow
+              icon={<SettingsIcon size={21} color="#1761B0" />}
+              title="Backend Configuration"
+              description="Manage API backend settings"
               background="#E7EFF9"
             />
           </View>
@@ -279,6 +338,60 @@ export default function SettingsScreen() {
       </View>
     </SafeAreaView>
   );
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Check if URL format is valid (basic check).
+ */
+function isValidUrl(url: string): boolean {
+    try {
+        new URL(url);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Test connection to backend.
+ */
+async function testBackendConnection(url: string): Promise<{ success: boolean; message: string }> {
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+        
+        const response = await fetch(`${url}/health`, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json',
+            },
+            signal: controller.signal,
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+            const data = await response.json();
+            return {
+                success: true,
+                message: `Connected! Backend is ready (version ${data.version}).`,
+            };
+        } else {
+            return {
+                success: false,
+                message: `Backend responded with error: ${response.status}`,
+            };
+        }
+    } catch (error) {
+        return {
+            success: false,
+            message: `Cannot connect to backend. Check your network and URL.`,
+        };
+    }
 }
 
 const styles = StyleSheet.create({
@@ -416,6 +529,21 @@ const styles = StyleSheet.create({
     fontSize: 10,
     lineHeight: 14,
     color: "#667085",
+  },
+
+  /* TEST CONNECTION BUTTON */
+  testButton: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#1761B0",
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: "#E7EFF9",
+    borderRadius: 8,
+  },
+
+  testButtonDisabled: {
+    opacity: 0.6,
   },
 
   divider: {
